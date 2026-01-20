@@ -34,6 +34,8 @@ The display device receives data from the sensor device and presents the informa
 - Microcontroller: ESP32-WROOM-32
 - Display: OLED Display https://www.mouser.com/datasheet/2/1398/Soldered_333099-3395096.pdf?srsltid=AfmBOoqps0u-2X1SBVf25elJZ8unm8vJw4Sn5SoTNT5sZieUPidi07-d 
 - LEDs: Red / Green LEDs for status 
+-Stepper：the stepper motor moves the gauge needle to the appropriate position based on soil moisture, controlled from the ESP32.
+
 
 **Description**
 The display device receives soil condition data from the sensor device.  
@@ -42,18 +44,15 @@ The OLED screen shows whether the soil is suitable for planting, and the LEDs pr
 ---
 
 ## 4. System Communication Diagram
-[Overview Sketch](IMG_2E9451848BBA-1.jpeg)
+[Overview Sketch](IMG_2313DD29A59D-1.jpeg)
 
-[Overview Sketch](systemflow.jpg)
+[Overview Sketch](systemflow1.jpg)
 
 ## Sceenshot-datasheet
 [Overview Sketch](Screenshotdatasheet.png)
 
 ## Github link
 https://github.com/pzhang23-bit/TECHIN514_SpencerZhang_System-Architecture-with-Diagram.git
-
-
-
 
 
 
