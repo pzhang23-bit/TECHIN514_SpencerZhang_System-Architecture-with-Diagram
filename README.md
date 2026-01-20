@@ -46,6 +46,15 @@ The OLED screen shows whether the soil is suitable for planting, and the LEDs pr
 
 [Overview Sketch](systemflow.jpg)
 
+## Sceenshot-datasheet
+[Overview Sketch](Screenshotdatasheet.png)
+
+## Github link
+https://github.com/pzhang23-bit/TECHIN514_SpencerZhang_System-Architecture-with-Diagram.git
+
+
+
+
 
 
 
