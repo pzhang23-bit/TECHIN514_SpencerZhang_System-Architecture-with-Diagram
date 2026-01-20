@@ -44,7 +44,7 @@ The OLED screen shows whether the soil is suitable for planting, and the LEDs pr
 ---
 
 ## 4. System Communication Diagram
-[Overview Sketch](IMG_2313DD29A59D-1.jpeg)
+[Overview Sketch](devicescommunicate.jpeg)
 
 [Overview Sketch](systemflow1.jpg)
 
@@ -53,7 +53,6 @@ The OLED screen shows whether the soil is suitable for planting, and the LEDs pr
 
 ## Github link
 https://github.com/pzhang23-bit/TECHIN514_SpencerZhang_System-Architecture-with-Diagram.git
-
 
 
 
