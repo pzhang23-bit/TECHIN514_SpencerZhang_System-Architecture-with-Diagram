@@ -1,0 +1,462 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <BLEClient.h>
+
+// ============ Pin Definition ============
+#define BUTTON_PIN 3
+#define LED_PIN 4
+#define SDA_PIN 6
+#define SCL_PIN 7
+
+// X27 Stepper Motor Pins
+#define MOTOR_PIN1 2
+#define MOTOR_PIN2 5
+#define MOTOR_PIN3 8
+#define MOTOR_PIN4 20
+
+// ============ BLE UUID ============
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define SCAN_TIME 5
+
+// ============ OLED ============
+Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+bool oledOK = false;
+
+// ============ BLE Variables ============
+static bool doConnect = false;
+static bool connected = false;
+static bool doScan = false;
+static BLERemoteCharacteristic* pRemoteCharacteristic;
+static BLEAdvertisedDevice* myDevice;
+static BLEClient* pClient;
+
+// ============ Sensor Data ============
+String g_status = "---";
+bool g_newData = false;
+
+// ============ Button Variables ============
+int lastButtonState = HIGH;
+int pressCount = 0;
+
+// ============ Motor Variables ============
+int currentPosition = 0;      // Current position
+int targetPosition = 0;       // Target position
+#define POS_CENTER 0          // Center position
+#define POS_LEFT -100         // Left (YES - moist)
+#define POS_RIGHT 100         // Right (NO - dry)
+#define MOTOR_DELAY 2         // Step delay (ms)
+
+// X27 Step Sequence (4-phase 8-step)
+const int stepSequence[8][4] = {
+  {1, 0, 0, 0},
+  {1, 1, 0, 0},
+  {0, 1, 0, 0},
+  {0, 1, 1, 0},
+  {0, 0, 1, 0},
+  {0, 0, 1, 1},
+  {0, 0, 0, 1},
+  {1, 0, 0, 1}
+};
+int stepIndex = 0;
+
+// ============ Motor Control Functions ============
+void motorStep(int direction) {
+  // direction: 1 = clockwise, -1 = counter-clockwise
+  if (direction > 0) {
+    stepIndex++;
+    if (stepIndex > 7) stepIndex = 0;
+  } else {
+    stepIndex--;
+    if (stepIndex < 0) stepIndex = 7;
+  }
+
+  digitalWrite(MOTOR_PIN1, stepSequence[stepIndex][0]);
+  digitalWrite(MOTOR_PIN2, stepSequence[stepIndex][1]);
+  digitalWrite(MOTOR_PIN3, stepSequence[stepIndex][2]);
+  digitalWrite(MOTOR_PIN4, stepSequence[stepIndex][3]);
+
+  delay(MOTOR_DELAY);
+}
+
+void motorOff() {
+  // Turn off all coils to save power
+  digitalWrite(MOTOR_PIN1, LOW);
+  digitalWrite(MOTOR_PIN2, LOW);
+  digitalWrite(MOTOR_PIN3, LOW);
+  digitalWrite(MOTOR_PIN4, LOW);
+}
+
+void motorMoveTo(int target) {
+  targetPosition = target;
+
+  while (currentPosition != targetPosition) {
+    if (currentPosition < targetPosition) {
+      motorStep(1);   // Clockwise
+      currentPosition++;
+    } else {
+      motorStep(-1);  // Counter-clockwise
+      currentPosition--;
+    }
+  }
+
+  motorOff();  // Turn off after reaching target
+}
+
+void motorInit() {
+  // Homing: move to one side then return to center
+  Serial.println("[MOTOR] Homing...");
+
+  for (int i = 0; i < 50; i++) {
+    motorStep(-1);
+  }
+  currentPosition = 0;
+
+  motorOff();
+  Serial.println("[MOTOR] Homing complete");
+}
+
+// ============ Move Pointer Based on Status ============
+void updateMotor() {
+  if (g_status == "YES") {
+    // Moist - point left
+    Serial.println("[MOTOR] -> Left (Moist)");
+    motorMoveTo(POS_LEFT);
+  } else if (g_status == "NO") {
+    // Dry - point right
+    Serial.println("[MOTOR] -> Right (Dry)");
+    motorMoveTo(POS_RIGHT);
+  } else if (g_status == "ERROR") {
+    // Error - return to center
+    Serial.println("[MOTOR] -> Center (Error)");
+    motorMoveTo(POS_CENTER);
+  }
+}
+
+// ============ Parse Data ============
+void parseData(uint8_t* pData, size_t length) {
+  char buffer[32];
+  if (length < sizeof(buffer)) {
+    memcpy(buffer, pData, length);
+    buffer[length] = '\0';
+    g_status = String(buffer);
+  } else {
+    g_status = "???";
+  }
+
+  g_newData = true;
+
+  Serial.println("-------- Sensor Data --------");
+  Serial.print("Status: ");
+  Serial.println(g_status);
+
+  if (g_status == "YES") {
+    Serial.println("Meaning: Soil moisture normal");
+  } else if (g_status == "NO") {
+    Serial.println("Meaning: Soil too dry or too wet");
+  } else if (g_status == "ERROR") {
+    Serial.println("Meaning: Sensor error");
+  }
+  Serial.println("-----------------------------");
+}
+
+// ============ Update OLED Display ============
+void updateOLED() {
+  if (!oledOK) return;
+
+  oled.clearDisplay();
+  oled.setTextColor(WHITE);
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+
+  if (connected) {
+    oled.println("=== Soil Sensor ===");
+    oled.println();
+    oled.println("Status:");
+    oled.println();
+
+    // Large status text
+    oled.setTextSize(3);
+    oled.setCursor(0, 28);
+    oled.println(g_status);
+
+    // Bottom label
+    oled.setTextSize(1);
+    oled.setCursor(0, 56);
+    if (g_status == "YES") {
+      oled.print("<< WET");
+    } else if (g_status == "NO") {
+      oled.print("DRY >>");
+    } else if (g_status == "ERROR") {
+      oled.print("-- ERROR --");
+    }
+  } else {
+    oled.println("=== Soil Sensor ===");
+    oled.println();
+    oled.println("BLE: Scanning...");
+    oled.println();
+    oled.println("Waiting for");
+    oled.println("connection...");
+  }
+
+  oled.display();
+}
+
+// ============ Notify Callback ============
+static void notifyCallback(
+  BLERemoteCharacteristic* pBLERemoteCharacteristic,
+  uint8_t* pData,
+  size_t length,
+  bool isNotify) {
+
+    Serial.println("[NOTIFY] Data received");
+    parseData(pData, length);
+
+    // Blink LED
+    digitalWrite(LED_PIN, HIGH);
+    delay(50);
+    digitalWrite(LED_PIN, LOW);
+}
+
+// ============ BLE Client Callbacks ============
+class MyClientCallback : public BLEClientCallbacks {
+  void onConnect(BLEClient* pclient) {
+    Serial.println("[BLE] Connected");
+  }
+
+  void onDisconnect(BLEClient* pclient) {
+    connected = false;
+    Serial.println("[BLE] Disconnected");
+    doScan = true;
+  }
+};
+
+// ============ BLE Scan Callbacks ============
+class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    Serial.print("[SCAN] ");
+    Serial.println(advertisedDevice.toString().c_str());
+
+    if (advertisedDevice.haveServiceUUID() &&
+        advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+
+      Serial.println("[SCAN] * Found SoilSensor!");
+      BLEDevice::getScan()->stop();
+      myDevice = new BLEAdvertisedDevice(advertisedDevice);
+      doConnect = true;
+      doScan = false;
+    }
+  }
+};
+
+// ============ Connect to Server ============
+bool connectToServer() {
+    Serial.print("[BLE] Connecting to: ");
+    Serial.println(myDevice->getAddress().toString().c_str());
+
+    pClient = BLEDevice::createClient();
+    pClient->setClientCallbacks(new MyClientCallback());
+
+    if (!pClient->connect(myDevice)) {
+        Serial.println("[BLE] Connection failed");
+        return false;
+    }
+    Serial.println("[BLE] Connection successful");
+
+    BLERemoteService* pRemoteService = pClient->getService(BLEUUID(SERVICE_UUID));
+    if (pRemoteService == nullptr) {
+      Serial.println("[BLE] Service not found");
+      pClient->disconnect();
+      return false;
+    }
+
+    pRemoteCharacteristic = pRemoteService->getCharacteristic(BLEUUID(CHARACTERISTIC_UUID));
+    if (pRemoteCharacteristic == nullptr) {
+      Serial.println("[BLE] Characteristic not found");
+      pClient->disconnect();
+      return false;
+    }
+
+    if(pRemoteCharacteristic->canRead()) {
+      std::string value = pRemoteCharacteristic->readValue();
+      parseData((uint8_t*)value.data(), value.length());
+    }
+
+    if(pRemoteCharacteristic->canNotify()) {
+      pRemoteCharacteristic->registerForNotify(notifyCallback);
+      Serial.println("[BLE] Notify registered");
+    }
+
+    connected = true;
+    return true;
+}
+
+// ============ SETUP ============
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  Serial.println();
+  Serial.println("################################");
+  Serial.println("#  Soil Sensor Client + Motor  #");
+  Serial.println("################################");
+  Serial.println();
+
+  // LED
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(500);
+  digitalWrite(LED_PIN, LOW);
+  Serial.println("[LED] GPIO4 OK");
+
+  // Button
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  Serial.println("[BTN] GPIO3 OK");
+
+  // Motor pins
+  pinMode(MOTOR_PIN1, OUTPUT);
+  pinMode(MOTOR_PIN2, OUTPUT);
+  pinMode(MOTOR_PIN3, OUTPUT);
+  pinMode(MOTOR_PIN4, OUTPUT);
+  motorOff();
+  Serial.println("[MOTOR] GPIO 2,5,8,20 OK");
+
+  // Motor homing
+  motorInit();
+
+  // Motor test: left -> right -> center
+  Serial.println("[MOTOR] Testing...");
+  motorMoveTo(POS_LEFT);
+  delay(500);
+  motorMoveTo(POS_RIGHT);
+  delay(500);
+  motorMoveTo(POS_CENTER);
+  Serial.println("[MOTOR] Test complete");
+
+  // I2C and OLED
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(100000);
+  delay(100);
+
+  byte oledAddr = 0;
+  for (byte addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("[I2C] Found: 0x");
+      Serial.println(addr, HEX);
+      if (addr == 0x3C || addr == 0x3D) {
+        oledAddr = addr;
+      }
+    }
+  }
+
+  if (oledAddr > 0) {
+    if (oled.begin(SSD1306_SWITCHCAPVCC, oledAddr)) {
+      oledOK = true;
+      Serial.println("[OLED] OK");
+
+      oled.clearDisplay();
+      oled.setTextSize(1);
+      oled.setTextColor(WHITE);
+      oled.setCursor(0, 0);
+      oled.println("=== Soil Sensor ===");
+      oled.println();
+      oled.println("Starting BLE...");
+      oled.display();
+    }
+  } else {
+    Serial.println("[OLED] Not found");
+  }
+
+  // BLE
+  Serial.println("[BLE] Initializing...");
+  BLEDevice::init("SoilClient");
+  Serial.println("[BLE] OK");
+
+  Serial.println("[BLE] Scanning...");
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
+  pBLEScan->setActiveScan(true);
+  pBLEScan->start(SCAN_TIME, false);
+
+  updateOLED();
+
+  Serial.println("======== Setup Complete ========");
+}
+
+// ============ LOOP ============
+void loop() {
+  // BLE connection
+  if (doConnect) {
+    if (connectToServer()) {
+      Serial.println("[BLE] * Connected successfully!");
+    } else {
+      Serial.println("[BLE] Connection failed");
+      doScan = true;
+    }
+    doConnect = false;
+    updateOLED();
+  }
+
+  // Rescan
+  if (!connected && doScan) {
+    Serial.println("[BLE] Rescanning...");
+    BLEDevice::getScan()->start(SCAN_TIME, false);
+    doScan = false;
+    updateOLED();
+  }
+
+  // New data received
+  if (g_newData) {
+    g_newData = false;
+    updateOLED();
+    updateMotor();  // Move pointer
+  }
+
+  // Button - manual refresh
+  int buttonState = digitalRead(BUTTON_PIN);
+  if (buttonState != lastButtonState) {
+    delay(20);
+    buttonState = digitalRead(BUTTON_PIN);
+
+    if (buttonState != lastButtonState) {
+      lastButtonState = buttonState;
+
+      if (buttonState == LOW) {
+        pressCount++;
+        digitalWrite(LED_PIN, HIGH);
+        Serial.print("[BTN] Pressed #");
+        Serial.println(pressCount);
+
+        if (connected && pRemoteCharacteristic && pRemoteCharacteristic->canRead()) {
+          std::string value = pRemoteCharacteristic->readValue();
+          parseData((uint8_t*)value.data(), value.length());
+          updateOLED();
+          updateMotor();
+        }
+      } else {
+        digitalWrite(LED_PIN, LOW);
+      }
+    }
+  }
+
+  // Heartbeat
+  static unsigned long lastBlink = 0;
+  if (millis() - lastBlink > 5000) {
+    lastBlink = millis();
+    digitalWrite(LED_PIN, HIGH);
+    delay(30);
+    digitalWrite(LED_PIN, LOW);
+  }
+
+  delay(10);
+}
