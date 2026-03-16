@@ -1,0 +1,59 @@
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+#define SENSOR_PIN D4
+#define DRY_THRESH 2800
+#define WET_THRESH 1200
+#define ERROR_THRESH 4000
+
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+BLECharacteristic *pCharacteristic;
+
+void setup() {
+  Serial.begin(115200);
+
+  BLEDevice::init("SoilSensor");
+  BLEServer *pServer = BLEDevice::createServer();
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+  );
+
+  pCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->start();
+
+  Serial.println("SoilSensor BLE started");
+}
+
+void loop() {
+  int raw = analogRead(SENSOR_PIN);
+  String result;
+
+  if (raw >= ERROR_THRESH) {
+    result = "ERROR";
+  } else if (raw > DRY_THRESH || raw < WET_THRESH) {
+    result = "NO";
+  } else {
+    result = "YES";
+  }
+
+  pCharacteristic->setValue(result.c_str());
+  pCharacteristic->notify();
+
+  Serial.print("Raw: ");
+  Serial.print(raw);
+  Serial.print("  Result: ");
+  Serial.println(result);
+
+  delay(1000);
+}
